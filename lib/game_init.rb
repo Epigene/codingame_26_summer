@@ -2,18 +2,11 @@
 
 # == GAME INIT ==
 
-# @width, @height = gets.split.map { |x| x.to_i }
-
-# @lines = []
-# @height.times do
-#   line = gets.chomp
-#   @lines << line
-#   debug line
-# end
-
 my_id = gets.to_i # 0 or 1
 width = gets.to_i # map size
 height = gets.to_i
+
+debug "#{my_id},#{width},#{height}"
 
 @rows = []
 
@@ -26,13 +19,13 @@ height.times do
     terrain =
       case terrain_id
       when 0
-        "_"
+        "."
       when 1
         "#"
       when 2
         "Δ"
       else # POI
-        "T"
+        "P"
       end
 
     @row << "#{terrain}#{region.to_s.ljust(2)}"
@@ -45,13 +38,14 @@ end
 town_count = gets.to_i
 @towns = []
 town_count.times do
-  # desired_connections: comma-separated town ids e.g. 0,1,2,3
-  #town_id, town_x, town_y, desired_connections = gets.split
-  #town_id = town_id.to_i
+  # town_id, town_x, town_y, desired_connections = gets.split
+  # town_id = town_id.to_i
   # town_x = town_x.to_i
-  #town_y = town_y.to_i
+  # town_y = town_y.to_i
+  # desired_connections: comma-separated town ids e.g. 0,1,2,3
   @towns << gets.chomp
 end
-debug @towns.join(";")
 
-@controller = Controller.new(field: @rows.join("\n"), towns: @towns.join(";"))
+debug @towns.join(";") #=> "0 11 1 x;1 1 2 0,4;2 6 6 0,1;3 18 8 0,1;4 1 10 0,2,3"
+
+@controller = Controller.new(my_id: my_id, field: @rows.join("\n"), towns: @towns.join(";"))

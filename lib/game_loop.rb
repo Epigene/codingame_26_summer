@@ -20,21 +20,28 @@ loop do
     width.times do |x|
       # instability: region inked (destroyed) when this >= 3.
       # inked: true if region is destroyed.
-      # part_of_active_connections: if this cell is part of one or more railway connections, this will be town ids (separated by -) in a list separated by commas. e.g. 0-1,1-2,1-3. "x" otherwise.
-      owner, instability, inked, part_of_active_connections = gets.chomp
+      # active_connections: if this cell is part of one or more railway connections, this will be town ids (separated by -) in a list separated by commas. e.g. 0-1,1-2,1-3. "x" otherwise.
+      line = gets.chomp #=> -1 0 0 x
+      owner, instability, inked, active_connections = line.split(" ")
 
       owner = owner.to_i
       instability = instability.to_i
-      inked = inked.to_i == 1
+      inked = inked.to_i
+      active_connections = "" if active_connections == "x"
 
       # nothing has happened on cell yet
       next if owner == -1 && instability.zero? && !inked
 
-      @cells["#{x} #{y}"] = [owner, instability, inked, part_of_active_connections]
+      @cells["#{x} #{y}"] =
+        if inked == 1
+          :i
+        else
+          [owner, instability, inked, active_connections]
+        end
     end
   end
 
-  debug @cells.to_s
+  @cells.each_slice(4) { |(k, v), (k2, v2), (k3, v3), (k4, v4)| debug("\"#{k}\"=>#{v}, \"#{k2}\"=>#{v2}, \"#{k3}\"=>#{v3}, \"#{k4}\"=>#{v4},") }
 
-  puts @controller.call(turn: @turn, scores: scores, cells: @cells)
+  puts @controller.call(turn: @turn, scores: scores, raw_cells: @cells)
 end
