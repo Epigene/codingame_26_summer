@@ -7,7 +7,7 @@ RSpec.describe WeightedGrid, instance_name: :grid do
   let(:height) { 2 }
 
   describe "#cheapest_path(from, to)" do
-    subject(:cheapest_paths) { grid.cheapest_paths(*args) }
+    subject(:cheapest_path) { grid.cheapest_path(*args) }
 
     context "when both diagonal paths are equivalent" do
       let(:args) { ["0 1", "1 0"] }

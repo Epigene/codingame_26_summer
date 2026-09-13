@@ -9,41 +9,111 @@ class WeightedGrid
   def initialize(width, height)
     @width = width
     @height = height
-    @costs = Hash.new(1)
+    @size = width * height
+
+    @costs = Array.new(@size, 1)
+    @removed = Array.new(@size, false)
+
+    @neighbors = Array.new(@size) { [] }
+
+    height.times do |y|
+      width.times do |x|
+        node = y * width + x
+        neighbors = @neighbors[node]
+
+        neighbors << node - width if y > 0
+        neighbors << node + 1 if x < width - 1
+        neighbors << node + width if y < height - 1
+        neighbors << node - 1 if x > 0
+      end
+    end
   end
 
-  def update_cost(node, cost)
-    @costs[node] = cost
-  end
+  # def cheapest_path(from, to)
+  #   from = node_index(from)
+  #   to = node_index(to)
+
+  #   return nil if @removed[from] || @removed[to]
+  #   return [from] if from == to
+
+  #   distances = Array.new(@size, Float::INFINITY)
+  #   parents = Array.new(@size)
+
+  #   distances[from] = 0
+
+  #   heap = MinHeap.new
+  #   sequence = 0
+  #   heap.push([0, sequence, from])
+
+  #   until heap.empty?
+  #     distance, _sequence, node = heap.pop
+
+  #     next if distance != distances[node]
+  #     return build_path(parents, from, to) if node == to
+
+  #     @neighbors[node].each do |neighbor|
+  #       next if @removed[neighbor]
+
+  #       new_distance = distance + @costs[neighbor]
+  #       next unless new_distance < distances[neighbor]
+
+  #       distances[neighbor] = new_distance
+  #       parents[neighbor] = node
+
+  #       sequence += 1
+  #       heap.push([new_distance, sequence, neighbor])
+  #     end
+  #   end
+
+  #   nil
+  # end
 
   def cheapest_path(from, to)
+    from = node_index(from)
+    to = node_index(to)
+
+    return nil if @removed[from] || @removed[to]
     return [from] if from == to
 
-    distances = Hash.new(Float::INFINITY)
-    parents = {}
+    distances = Array.new(@size, Float::INFINITY)
+    parents = Array.new(@size)
+
     distances[from] = 0
 
-    heap = MinHeap.new
-    sequence = 0
-    heap.push([0, sequence, from])
+    buckets = Array.new(4) { [] }
+    buckets[0] << from
 
-    until heap.empty?
-      distance, = heap.peek
-      distance, _sequence, node = heap.pop
+    current_distance = 0
+    remaining = 1
 
-      next if distance != distances[node]
+    while remaining > 0
+      bucket = buckets[current_distance % 4]
+
+      while bucket.empty?
+        current_distance += 1
+        bucket = buckets[current_distance % 4]
+      end
+
+      node = bucket.shift
+      remaining -= 1
+
+      # Stale entries can exist because we don't decrease-key.
+      next unless distances[node] == current_distance
+
       return build_path(parents, from, to) if node == to
 
-      neighbors(node).each do |neighbor|
-        new_distance = distance + @costs[neighbor]
+      @neighbors[node].each do |neighbor|
+        next if @removed[neighbor]
+
+        new_distance = current_distance + @costs[neighbor]
 
         next unless new_distance < distances[neighbor]
 
         distances[neighbor] = new_distance
         parents[neighbor] = node
 
-        sequence += 1
-        heap.push([new_distance, sequence, neighbor])
+        buckets[new_distance % 4] << neighbor
+        remaining += 1
       end
     end
 
@@ -52,60 +122,70 @@ class WeightedGrid
 
   # Unweighted shortest path.
   def shortest_path(from, to)
+    from = node_index(from)
+    to = node_index(to)
+
+    return nil if @removed[from] || @removed[to]
     return [from] if from == to
 
-    parents = {}
-    visited = { from => true }
-    queue = [from]
-    head = 0
+    parents = Array.new(@size)
+    visited = Array.new(@size, false)
 
-    while head < queue.length
+    queue = Array.new(@size)
+    head = 0
+    tail = 0
+
+    queue[tail] = from
+    tail += 1
+    visited[from] = true
+
+    while head < tail
       node = queue[head]
       head += 1
 
-      neighbors(node).each do |neighbor|
-        next if visited[neighbor]
+      @neighbors[node].each do |neighbor|
+        next if @removed[neighbor] || visited[neighbor]
 
         visited[neighbor] = true
         parents[neighbor] = node
 
         return build_path(parents, from, to) if neighbor == to
 
-        queue << neighbor
+        queue[tail] = neighbor
+        tail += 1
       end
     end
 
     nil
   end
 
-  # Compatibility with the spec's plural name.
-  alias cheapest_paths cheapest_path
+  def remove_node(node)
+    @removed[node_index(node)] = true
+  end
+
+  def update_cost(node, cost)
+    @costs[node_index(node)] = cost
+  end
 
   private
 
-  def neighbors(node)
-    x = node.x
-    y = node.y
-
-    DIRECTIONS.filter_map do |dx, dy|
-      nx = x + dx
-      ny = y + dy
-
-      next unless nx.between?(0, @width - 1)
-      next unless ny.between?(0, @height - 1)
-
-      "#{nx} #{ny}"
-    end
+  def node_index(node)
+    node.y * @width + node.x
   end
 
+  def node_from_index(index)
+    "#{index % @width} #{index / @width}"
+  end
+
+  # @return Array<StringCell>
   def build_path(parents, from, to)
     path = [to]
 
     while path.last != from
-      path << parents.fetch(path.last)
+      path << parents[path.last]
     end
 
-    path.reverse
+    path.reverse.map { node_from_index(_1) }
   end
 
   class MinHeap

@@ -12,11 +12,44 @@ Town = Struct.new(:id, :x, :y, :desired_connections, keyword_init: true) do
   end
 end
 
-Region = Struct.new(:id, :instability, :inked, :cells, keyword_init: true) do
+Region = Struct.new(:id, :instability, :inked, :nodes, keyword_init: true) do
   attr_accessor :has_town
 
   def inkable?
     !has_town
+  end
+
+  def cells
+    nodes.map { $cells[_1] }
+  end
+
+  # how many points per turn I get if this keeps being uninked
+  def my_scoring
+    cells.select(&:my?).flat_map { _1.connections.to_a }.uniq
+      .sum { $connections[_1].my_scoring }
+  end
+
+  # how many points per turn OPP gets if this keeps being uninked
+  def opp_scoring
+    # binding.pry
+    cells.select(&:opp?).flat_map { _1.connections.to_a }.uniq
+      .sum { $connections[_1].opp_scoring }
+  end
+end
+
+Connection = Struct.new(:id, keyword_init: true) do
+  def nodes
+    @nodes ||= Set.new
+  end
+
+  # @return Integer
+  def my_scoring
+    nodes.sum { $cells[_1].my? ? 1 : 0 }
+  end
+
+  # @return Integer
+  def opp_scoring
+    nodes.sum { $cells[_1].opp? ? 1 : 0 }
   end
 end
 
@@ -27,8 +60,16 @@ Cell = Struct.new(:x, :y, :cost, :region_id, keyword_init: true) do
     @node ||= "#{x} #{y}"
   end
 
+  def connections
+    @connections ||= Set.new
+  end
+
   def buildable?
     (owner.nil? || owner == -1) && !inked? && !town?
+  end
+
+  def likely_scorable_by_me?
+    my? || buildable?
   end
 
   # @return Integer # how many active connections and thus points this scores
@@ -68,7 +109,7 @@ end
 class Controller
   attr_reader :my_id, :field, :raw_towns, :towns, :turn, :scores, :raw_cells,
     :cheapest_connections
-  attr_accessor :placements
+  attr_accessor :placements, :disruptable_region_id
 
   # @param field String # multiline heredoc style
   # @param towns String # a semicolon-separated list of town data | "0 11 1 x;1 1 2 0,4"
@@ -90,28 +131,17 @@ class Controller
     @turn = turn
     @raw_cells = raw_cells
     update_cells!
+    ms("> Cheapest connection turn init #{turn}") { init_cheapest_connections }
     @placements = []
 
     # -- Key rails placing logic
     determine_placements
+    raise("DUPLICATE PLACEMENTS DETECTED! placements:#{placements}") if placements.size != placements.uniq.size
     # --
 
     # -- Opp scoring and disruption
-    op_cells_by_region = $cells.select { |k, v| v.opp? && v.inkable? }.group_by { |k, v| v.region_id }
-
-    most_scoring_region = op_cells_by_region.to_a.map do |region_id, cells|
-      sum = cells.map { |node, cell| cell.scoring }.sum
-      [region_id, sum]
-    end.sort_by { |k, v| -v }.first
-
-    most_celled_region = op_cells_by_region.to_a.map do |region_id, cells|
-      sum = cells.size
-      [region_id, sum]
-    end.sort_by { |k, v| -v }.first
-
-    disruptable_region_id = (most_scoring_region || [])[0]
-    disruptable_region_id = most_celled_region[0] if (most_celled_region || [])[1].to_i > (most_scoring_region || [])[1].to_i.next
-    # --
+    ms("> disruptable_region #{turn}") { determine_disruptable_region_id }
+    #--
 
     # PLACE_TRACKS x y : place a track on a free cell.
     # AUTOPLACE fromX fromY toX toY : automatically generates a list of actions for the cheapest path from from to to in terms of paint points. This will do nothing if a path already exists.
@@ -128,14 +158,43 @@ class Controller
 
   private
 
+  def determine_disruptable_region_id
+    op_cells_by_region = $cells.select { |k, v| v.opp? && v.inkable? }.group_by { |k, v| v.region_id }
+
+    if_inked_changes = {}
+
+    op_cells_by_region.each_pair do |region_id, opp_cells|
+      my_loss = $regions[region_id].my_scoring
+      opp_loss = $regions[region_id].opp_scoring
+
+      diff = opp_loss - my_loss
+      if_inked_changes[region_id] = { me: my_loss, opp: opp_loss, diff: diff}
+    end
+
+    region_id, data = if_inked_changes
+      .select { |region_id, data| data[:diff].positive? }
+      .sort_by { |region_id, data| [-data[:diff], -$regions[region_id].cells.select(&:opp?).size] }
+      .first
+
+    self.disruptable_region_id = region_id
+  end
+
   # @return nil # side-effects of populating @placements only
   def determine_placements
+    # 1. working on finishing connections
     cheapest_connections.each_pair do |id, path|
-      candidates = path.select { $cells[_1].buildable? }.sort_by { $cells[_1].cost }.first(3-placements.size)
+      # TODO, if path consists of unbuilt 1,1,2,2 prefer [1,2],[1,2] not [1, 1],[2],[2]
+
+      candidates = (path - placements).select { $cells[_1].buildable? }
+        .sort_by { [$cells[_1].cost, $cells[_1].inkable? ? 1 : 0] }
+        .first(3-placements.size)
+
       self.placements += candidates
 
       break if self.placements.size >= 3
     end
+
+    # TODO 2. optimizing connections so that we take rails away from OPP.
 
     nil
   end
@@ -160,9 +219,47 @@ class Controller
   # Scoring is a bit tricky. We assume best scenario for us - unowned cells will become ours.
   def path_scoring(path)
     turns = path_turns(path)
-    length = path.size
+    likely_owned_length = path_likely_owned_length(path)
 
-    length / turns.to_f
+    likely_owned_length / turns.to_f
+  end
+
+  def path_likely_owned_length(path)
+    path.sum { $cells[_1].likely_scorable_by_me? ? 1 : 0 }
+  end
+
+  #===================
+  #  Per-turn gamestate refresh
+  #===================
+
+  def update_cells!
+    $connections = {}
+
+    raw_cells.each_pair do |node, data|
+      if data == :i
+        $cells[node].owner = nil
+        $cells[node].instability = 4
+        $cells[node].inked = true
+        $cells[node].connections = Set.new
+      else
+        owner = data[0]
+        $cells[node].owner = owner
+        $cells[node].instability = data[1]
+        $cells[node].inked = data[2] == 1
+        $cells[node].connections = data[3].split(",").map { _1.gsub("-", ",") }.to_set
+
+        # cost of zero for already built cells will play a role in cheapest path determination
+        $cells[node].cost = 0 if owner == 0 || owner == 1 || owner == 2 || $cells[node].town?
+      end
+
+      $grid.remove_node(node) if $cells[node].inked?
+      $grid.update_cost(node, $cells[node].cost)
+
+      $cells[node].connections.each do |connection_id|
+        $connections[connection_id] ||= Connection.new(id: connection_id)
+        $connections[connection_id].nodes << node
+      end
+    end
   end
 
   #===================
@@ -210,8 +307,8 @@ class Controller
 
         region_id = plot[1..].to_i
 
-        $regions[region_id] ||= Region.new(id: region_id, instability: 0, inked: false, cells: Set.new)
-        $regions[region_id].cells << node
+        $regions[region_id] ||= Region.new(id: region_id, instability: 0, inked: false, nodes: Set.new)
+        $regions[region_id].nodes << node
 
         $cells[node] = Cell.new(x: x, y: y, cost: cost, region_id: region_id)
 
@@ -234,13 +331,15 @@ class Controller
       town.desired_connections.each do |dest_id|
         destination = towns[dest_id]
         path = $grid.cheapest_path(town.node, destination.node)
+        next if path.nil?
 
         @cheapest_connections["#{town.id},#{destination.id}"] = path[1..-2]
       end
     end
 
-
     @cheapest_connections = @cheapest_connections.to_a
+      # throwing away already built cheapest paths
+      .select { |id, path| !$cells[path.first].connections.include?(id) }
       # prefer fewer-turn paths, but among equal-turn, prefer longer ones since they score more.
       .sort_by { |id, path| [path_turns(path), -path_scoring(path)] }
       .to_h
@@ -251,23 +350,6 @@ class Controller
   #===================
   #  TURN INIT BELOW
   #===================
-
-  def update_cells!
-    raw_cells.each_pair do |node, data|
-      if data == :i
-        $cells[node].owner = nil
-        $cells[node].instability = 4
-        $cells[node].inked = true
-        $cells[node].connections = Set.new
-        next
-      end
-
-      $cells[node].owner = data[0]
-      $cells[node].instability = data[1]
-      $cells[node].inked = data[2] == 1
-      $cells[node].connections = data[3].split(",").map { _1.gsub("-", ",") }.to_set
-    end
-  end
 
   def init_time_taken
     t1 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
