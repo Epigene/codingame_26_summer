@@ -72,6 +72,10 @@ Cell = Struct.new(:x, :y, :cost, :region_id, keyword_init: true) do
     my? || buildable?
   end
 
+  def likely_scorable_by_opp?
+    opp? || buildable?
+  end
+
   # @return Integer # how many active connections and thus points this scores
   def scoring
     connections.size
@@ -158,27 +162,6 @@ class Controller
 
   private
 
-  def determine_disruptable_region_id
-    op_cells_by_region = $cells.select { |k, v| v.opp? && v.inkable? }.group_by { |k, v| v.region_id }
-
-    if_inked_changes = {}
-
-    op_cells_by_region.each_pair do |region_id, opp_cells|
-      my_loss = $regions[region_id].my_scoring
-      opp_loss = $regions[region_id].opp_scoring
-
-      diff = opp_loss - my_loss
-      if_inked_changes[region_id] = { me: my_loss, opp: opp_loss, diff: diff}
-    end
-
-    region_id, data = if_inked_changes
-      .select { |region_id, data| data[:diff].positive? }
-      .sort_by { |region_id, data| [-data[:diff], -$regions[region_id].cells.select(&:opp?).size] }
-      .first
-
-    self.disruptable_region_id = region_id
-  end
-
   # @return nil # side-effects of populating @placements only
   def determine_placements
     # 1. working on finishing connections
@@ -197,6 +180,42 @@ class Controller
     # TODO 2. optimizing connections so that we take rails away from OPP.
 
     nil
+  end
+
+  def determine_disruptable_region_id
+    op_cells_by_region = $cells.select { |k, v| v.opp? && v.inkable? }.group_by { |k, v| v.region_id }
+
+    if_inked_changes = {}
+
+    op_cells_by_region.each_pair do |region_id, opp_cells|
+      my_loss = $regions[region_id].my_scoring
+      opp_loss = $regions[region_id].opp_scoring
+
+      diff = opp_loss - my_loss
+      if_inked_changes[region_id] = { me: my_loss, opp: opp_loss, diff: diff}
+    end
+
+    region_id, data = if_inked_changes
+      .select { |region_id, data| data[:diff].positive? }
+      .sort_by { |region_id, data| [-data[:diff], -$regions[region_id].cells.select(&:opp?).size] }
+      .first
+
+    return self.disruptable_region_id = region_id if region_id
+
+    # If got here means nothing is scoring yet.
+    _, path = cheapest_connections
+      .select { |k, path| path_opp_length(path).positive? }
+      .sort_by { |k, path| [path_turns(path), -path_opp_scoring(path)] }
+      .first
+
+    return if path.nil?
+
+    region_id, score = path.each_with_object(Hash.new(0)) do |node, mem|
+      cell = $cells[node]
+      mem[cell.region_id] += (cell.opp? ? 2 : 0) + (cell.buildable? ? 1 : 0)
+    end.max_by { _2 }
+
+    self.disruptable_region_id = region_id
   end
 
   #===================
@@ -224,9 +243,26 @@ class Controller
     likely_owned_length / turns.to_f
   end
 
+  def path_opp_scoring(path)
+    turns = path_turns(path)
+    likely_owned_length = path_likely_opp_length(path)
+
+    likely_owned_length / turns.to_f
+  end
+
   def path_likely_owned_length(path)
     path.sum { $cells[_1].likely_scorable_by_me? ? 1 : 0 }
   end
+
+  # -- Definitely opp's VS maybe
+  def path_opp_length(path)
+    path.sum { $cells[_1].opp? ? 1 : 0 }
+  end
+
+  def path_likely_opp_length(path)
+    path.sum { $cells[_1].likely_scorable_by_opp? ? 1 : 0 }
+  end
+  #--
 
   #===================
   #  Per-turn gamestate refresh
