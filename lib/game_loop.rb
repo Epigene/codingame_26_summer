@@ -30,7 +30,7 @@ loop do
       active_connections = "" if active_connections == "x"
 
       # nothing has happened on cell yet
-      next if owner == -1 && instability.zero? && !inked
+      next if owner == -1 && instability.zero?
 
       @cells["#{x} #{y}"] =
         if inked == 1
@@ -41,7 +41,7 @@ loop do
     end
   end
 
-  @cells.each_slice(4) { |(k, v), (k2, v2), (k3, v3), (k4, v4)| debug("\"#{k}\"=>#{v}, \"#{k2}\"=>#{v2}, \"#{k3}\"=>#{v3}, \"#{k4}\"=>#{v4},") }
+  @cells.each_slice(4) { |(k, v), (k2, v2), (k3, v3), (k4, v4)| debug("\"#{k}\"=>#{v.inspect}, \"#{k2}\"=>#{v2.inspect}, \"#{k3}\"=>#{v3.inspect}, \"#{k4}\"=>#{v4.inspect},") }
 
   puts @controller.call(turn: @turn, scores: scores, raw_cells: @cells)
 end

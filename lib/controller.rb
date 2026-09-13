@@ -66,7 +66,9 @@ Cell = Struct.new(:x, :y, :cost, :region_id, keyword_init: true) do
 end
 
 class Controller
-  attr_reader :my_id, :field, :raw_towns, :towns, :turn, :cheapest_connections
+  attr_reader :my_id, :field, :raw_towns, :towns, :turn, :scores, :raw_cells,
+    :cheapest_connections
+  attr_accessor :placements
 
   # @param field String # multiline heredoc style
   # @param towns String # a semicolon-separated list of town data | "0 11 1 x;1 1 2 0,4"
@@ -86,29 +88,13 @@ class Controller
   def call(turn: 1, scores: [0, 0], raw_cells: {})
     @t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     @turn = turn
+    @raw_cells = raw_cells
+    update_cells!
+    @placements = []
 
-    raw_cells.each_pair do |node, data|
-      if data == :i
-        $cells[node].owner = nil
-        $cells[node].instability = 4
-        $cells[node].inked = true
-        $cells[node].connections = Set.new
-        next
-      end
-
-      $cells[node].owner = data[0]
-      $cells[node].instability = data[1]
-      $cells[node].inked = data[2] == 1
-      $cells[node].connections = data[3].split(",").map { _1.gsub("-", ",") }.to_set
-    end
-
-    placements = []
-
-    cheapest_connections.each_pair do |id, path|
-      placements += path.select { $cells[_1].buildable? }.sort_by { $cells[_1].cost }.first(3-placements.size)
-
-      break if placements.size >= 3
-    end
+    # -- Key rails placing logic
+    determine_placements
+    # --
 
     # -- Opp scoring and disruption
     op_cells_by_region = $cells.select { |k, v| v.opp? && v.inkable? }.group_by { |k, v| v.region_id }
@@ -141,6 +127,47 @@ class Controller
   end
 
   private
+
+  # @return nil # side-effects of populating @placements only
+  def determine_placements
+    cheapest_connections.each_pair do |id, path|
+      candidates = path.select { $cells[_1].buildable? }.sort_by { $cells[_1].cost }.first(3-placements.size)
+      self.placements += candidates
+
+      break if self.placements.size >= 3
+    end
+
+    nil
+  end
+
+  #===================
+  #  INSPECTION METHODS
+  #===================
+
+  # @param path Array # sans town cells, only the connecting rail cells
+  def path_cost(path)
+    sum = 0
+    path.each do |node|
+      sum += $cells[node].cost
+    end
+    sum
+  end
+
+  def path_turns(path)
+    (path_cost(path) / 3.0).ceil
+  end
+
+  # Scoring is a bit tricky. We assume best scenario for us - unowned cells will become ours.
+  def path_scoring(path)
+    turns = path_turns(path)
+    length = path.size
+
+    length / turns.to_f
+  end
+
+  #===================
+  #  GAME INIT SETUP BELOW
+  #===================
 
   # @return Hash # { id => Town}
   def init_towns
@@ -212,23 +239,35 @@ class Controller
       end
     end
 
-    @cheapest_connections.to_a.sort_by { |id, path| path_cost(path) }.to_h
+
+    @cheapest_connections = @cheapest_connections.to_a
+      # prefer fewer-turn paths, but among equal-turn, prefer longer ones since they score more.
+      .sort_by { |id, path| [path_turns(path), -path_scoring(path)] }
+      .to_h
 
     nil
-  end
-
-  # @param path Array # sans town cells, only the connecting rail cells
-  def path_cost(path)
-    sum = 0
-    path.each do |node|
-      sum += $cells[node].cost
-    end
-    sum
   end
 
   #===================
   #  TURN INIT BELOW
   #===================
+
+  def update_cells!
+    raw_cells.each_pair do |node, data|
+      if data == :i
+        $cells[node].owner = nil
+        $cells[node].instability = 4
+        $cells[node].inked = true
+        $cells[node].connections = Set.new
+        next
+      end
+
+      $cells[node].owner = data[0]
+      $cells[node].instability = data[1]
+      $cells[node].inked = data[2] == 1
+      $cells[node].connections = data[3].split(",").map { _1.gsub("-", ",") }.to_set
+    end
+  end
 
   def init_time_taken
     t1 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
