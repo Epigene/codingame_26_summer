@@ -12,11 +12,23 @@ Town = Struct.new(:id, :x, :y, :desired_connections, keyword_init: true) do
   end
 end
 
-Region = Struct.new(:id, :instability, :inked, :nodes, keyword_init: true) do
+Region = Struct.new(:id, keyword_init: true) do
   attr_accessor :has_town
+
+  def nodes
+    @nodes ||= Set.new
+  end
 
   def inkable?
     !has_town
+  end
+
+  def instability
+    example_cell.instability
+  end
+
+  def inked?
+    example_cell.inked?
   end
 
   def cells
@@ -34,6 +46,12 @@ Region = Struct.new(:id, :instability, :inked, :nodes, keyword_init: true) do
     # binding.pry
     cells.select(&:opp?).flat_map { _1.connections.to_a }.uniq
       .sum { $connections[_1].opp_scoring }
+  end
+
+  private
+
+  def example_cell
+    $cells[nodes.first]
   end
 end
 
@@ -58,6 +76,10 @@ Cell = Struct.new(:x, :y, :cost, :region_id, keyword_init: true) do
 
   def node
     @node ||= "#{x} #{y}"
+  end
+
+  def instability
+    @instability || 0
   end
 
   def connections
@@ -112,7 +134,7 @@ end
 
 class Controller
   attr_reader :my_id, :field, :raw_towns, :towns, :turn, :scores, :raw_cells,
-    :cheapest_connections
+    :cheapest_connections, :t0, :t1
   attr_accessor :placements, :disruptable_region_id
 
   # @param field String # multiline heredoc style
@@ -157,10 +179,14 @@ class Controller
       ("DISRUPT #{disruptable_region_id}" if disruptable_region_id)
     ].compact.join("; ")
 
+    raise("Oops, ran out of time. Turn #{turn} took #{turn_time_taken}") if turn_time_remaining <= 0
+
     return c != "" ? c : "WAIT"
   end
 
   private
+
+  SHUFFLABLE_COST = [1, 1, 2].freeze
 
   # @return nil # side-effects of populating @placements only
   def determine_placements
@@ -172,12 +198,18 @@ class Controller
         .sort_by { [$cells[_1].cost, $cells[_1].inkable? ? 1 : 0] }
         .first(3-placements.size)
 
+      if placements.none? && candidates.map { $cells[_1].cost } == SHUFFLABLE_COST
+        self.placements = [candidates.first, candidates.last]
+        break
+      end
+
       self.placements += candidates
 
       break if self.placements.size >= 3
     end
 
     # TODO 2. optimizing connections so that we take rails away from OPP.
+    # idea, raise when this would have been best move to get situations
 
     nil
   end
@@ -188,10 +220,11 @@ class Controller
     if_inked_changes = {}
 
     op_cells_by_region.each_pair do |region_id, opp_cells|
-      my_loss = $regions[region_id].my_scoring
-      opp_loss = $regions[region_id].opp_scoring
+      region = $regions[region_id]
+      my_loss = region.my_scoring
+      opp_loss = region.opp_scoring
 
-      diff = opp_loss - my_loss
+      diff = (opp_loss * region.instability) - my_loss
       if_inked_changes[region_id] = { me: my_loss, opp: opp_loss, diff: diff}
     end
 
@@ -204,7 +237,7 @@ class Controller
 
     # If got here means nothing is scoring yet.
     _, path = cheapest_connections
-      .select { |k, path| path_opp_length(path).positive? }
+      .select { |k, path| path_opp_length(path) >= 2 }
       .sort_by { |k, path| [path_turns(path), -path_opp_scoring(path)] }
       .first
 
@@ -212,6 +245,8 @@ class Controller
 
     region_id, score = path.each_with_object(Hash.new(0)) do |node, mem|
       cell = $cells[node]
+      next unless cell.region.inkable?
+
       mem[cell.region_id] += (cell.opp? ? 2 : 0) + (cell.buildable? ? 1 : 0)
     end.max_by { _2 }
 
@@ -343,7 +378,7 @@ class Controller
 
         region_id = plot[1..].to_i
 
-        $regions[region_id] ||= Region.new(id: region_id, instability: 0, inked: false, nodes: Set.new)
+        $regions[region_id] ||= Region.new(id: region_id)
         $regions[region_id].nodes << node
 
         $cells[node] = Cell.new(x: x, y: y, cost: cost, region_id: region_id)
@@ -405,7 +440,7 @@ class Controller
 
   # using a value somewhat lower than 50ms stated in rules for safety
   # @return Numeric # in ms
-  TURN_TIME = 45
+  TURN_TIME = 50
   def turn_time_remaining
     TURN_TIME - turn_time_taken
   end

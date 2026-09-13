@@ -1,10 +1,14 @@
 class WeightedGrid
+  # Direction index itself is the tie-break priority:
+  # N = 0, E = 1, S = 2, W = 3
   DIRECTIONS = [
     [0, -1], # N
     [1,  0], # E
     [0,  1], # S
     [-1, 0]  # W
   ].freeze
+
+  INF = Float::INFINITY
 
   def initialize(width, height)
     @width = width
@@ -29,91 +33,93 @@ class WeightedGrid
     end
   end
 
-  # def cheapest_path(from, to)
-  #   from = node_index(from)
-  #   to = node_index(to)
-
-  #   return nil if @removed[from] || @removed[to]
-  #   return [from] if from == to
-
-  #   distances = Array.new(@size, Float::INFINITY)
-  #   parents = Array.new(@size)
-
-  #   distances[from] = 0
-
-  #   heap = MinHeap.new
-  #   sequence = 0
-  #   heap.push([0, sequence, from])
-
-  #   until heap.empty?
-  #     distance, _sequence, node = heap.pop
-
-  #     next if distance != distances[node]
-  #     return build_path(parents, from, to) if node == to
-
-  #     @neighbors[node].each do |neighbor|
-  #       next if @removed[neighbor]
-
-  #       new_distance = distance + @costs[neighbor]
-  #       next unless new_distance < distances[neighbor]
-
-  #       distances[neighbor] = new_distance
-  #       parents[neighbor] = node
-
-  #       sequence += 1
-  #       heap.push([new_distance, sequence, neighbor])
-  #     end
-  #   end
-
-  #   nil
-  # end
-
+  # @param from String # monkeypatched to respond to #x and #y
+  # @return Array<StringCell>,nil
   def cheapest_path(from, to)
     from = node_index(from)
     to = node_index(to)
 
-    return nil if @removed[from] || @removed[to]
-    return [from] if from == to
+    return [] if @removed[from] || @removed[to]
+    return [node_from_index(from)] if from == to
 
-    distances = Array.new(@size, Float::INFINITY)
+    distances = Array.new(@size, INF)
     parents = Array.new(@size)
+    path_keys = Array.new(@size)
 
     distances[from] = 0
+    path_keys[from] = +""
 
+    # Four buckets are enough in principle, but we keep a bucket for
+    # each possible distance modulo 4.
     buckets = Array.new(4) { [] }
-    buckets[0] << from
+
+    buckets[0] << [from, 0, +""]
 
     current_distance = 0
     remaining = 1
 
     while remaining > 0
-      bucket = buckets[current_distance % 4]
+      bucket = buckets[current_distance & 3]
 
+      # Entries can remain in buckets after becoming stale.
       while bucket.empty?
         current_distance += 1
-        bucket = buckets[current_distance % 4]
+        bucket = buckets[current_distance & 3]
       end
 
-      node = bucket.shift
+      # Among equal-distance entries, select the lexicographically
+      # smallest NESW direction sequence.
+      best_index = 0
+      best_entry = bucket[0]
+
+      i = 1
+      while i < bucket.length
+        entry = bucket[i]
+
+        if entry[1] < best_entry[1] ||
+           (entry[1] == best_entry[1] && entry[2] < best_entry[2])
+          best_index = i
+          best_entry = entry
+        end
+
+        i += 1
+      end
+
+      node, distance, key = bucket.delete_at(best_index)
       remaining -= 1
 
-      # Stale entries can exist because we don't decrease-key.
-      next unless distances[node] == current_distance
+      # Stale entry.
+      next unless distance == distances[node] && key == path_keys[node]
 
       return build_path(parents, from, to) if node == to
 
-      @neighbors[node].each do |neighbor|
+      neighbors = @neighbors[node]
+
+      i = 0
+      while i < neighbors.length
+        neighbor = neighbors[i]
+        i += 1
+
         next if @removed[neighbor]
 
-        new_distance = current_distance + @costs[neighbor]
+        cost = @costs[neighbor]
+        new_distance = distance + cost
 
-        next unless new_distance < distances[neighbor]
+        # Direction is determined from the two node indices.
+        direction = direction_between(node, neighbor)
+        new_key = key + direction
 
-        distances[neighbor] = new_distance
-        parents[neighbor] = node
+        if new_distance < distances[neighbor] ||
+           (new_distance == distances[neighbor] &&
+            (path_keys[neighbor].nil? || new_key < path_keys[neighbor]))
 
-        buckets[new_distance % 4] << neighbor
-        remaining += 1
+          distances[neighbor] = new_distance
+          parents[neighbor] = node
+          path_keys[neighbor] = new_key
+
+          buckets[new_distance & 3] << [neighbor, new_distance, new_key]
+          remaining += 1
+        end
       end
     end
 
@@ -121,12 +127,14 @@ class WeightedGrid
   end
 
   # Unweighted shortest path.
+  #
+  # NESW order is naturally preserved by BFS.
   def shortest_path(from, to)
     from = node_index(from)
     to = node_index(to)
 
-    return nil if @removed[from] || @removed[to]
-    return [from] if from == to
+    return [] if @removed[from] || @removed[to]
+    return [node_from_index(from)] if from == to
 
     parents = Array.new(@size)
     visited = Array.new(@size, false)
@@ -143,14 +151,20 @@ class WeightedGrid
       node = queue[head]
       head += 1
 
-      @neighbors[node].each do |neighbor|
+      neighbors = @neighbors[node]
+
+      i = 0
+      while i < neighbors.length
+        neighbor = neighbors[i]
+        i += 1
+
         next if @removed[neighbor] || visited[neighbor]
 
-        visited[neighbor] = true
         parents[neighbor] = node
 
         return build_path(parents, from, to) if neighbor == to
 
+        visited[neighbor] = true
         queue[tail] = neighbor
         tail += 1
       end
@@ -177,7 +191,20 @@ class WeightedGrid
     "#{index % @width} #{index / @width}"
   end
 
-  # @return Array<StringCell>
+  def direction_between(from, to)
+    delta = to - from
+
+    if delta == -@width
+      "0" # N
+    elsif delta == 1
+      "1" # E
+    elsif delta == @width
+      "2" # S
+    else
+      "3" # W
+    end
+  end
+
   def build_path(parents, from, to)
     path = [to]
 
@@ -186,74 +213,5 @@ class WeightedGrid
     end
 
     path.reverse.map { node_from_index(_1) }
-  end
-
-  class MinHeap
-    def initialize
-      @items = []
-    end
-
-    def empty?
-      @items.empty?
-    end
-
-    def peek
-      @items.first
-    end
-
-    def push(item)
-      @items << item
-      bubble_up(@items.length - 1)
-    end
-
-    def pop
-      result = @items.first
-      last = @items.pop
-
-      unless @items.empty?
-        @items[0] = last
-        bubble_down(0)
-      end
-
-      result
-    end
-
-    private
-
-    def bubble_up(index)
-      while index > 0
-        parent = (index - 1) / 2
-
-        break if (@items[parent][0, 2] <=> @items[index][0, 2]) <= 0
-
-        @items[parent], @items[index] = @items[index], @items[parent]
-        index = parent
-      end
-    end
-
-    def bubble_down(index)
-      length = @items.length
-
-      loop do
-        left = index * 2 + 1
-        right = left + 1
-        smallest = index
-
-        if left < length &&
-          (@items[left][0, 2] <=> @items[smallest][0, 2]) < 0
-          smallest = left
-        end
-
-        if right < length &&
-          (@items[right][0, 2] <=> @items[smallest][0, 2]) < 0
-          smallest = right
-        end
-
-        break if smallest == index
-
-        @items[index], @items[smallest] = @items[smallest], @items[index]
-        index = smallest
-      end
-    end
   end
 end
